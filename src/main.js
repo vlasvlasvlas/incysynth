@@ -10,6 +10,10 @@ import { WorldBankAdapter }   from './data-sources/WorldBankAdapter.js';
 import { CircleView }         from './ui/CircleView.js';
 import { PartituraView }      from './ui/PartituraView.js';
 import { buildLenteCard, buildCiudadCard, buildNoticiasCard, buildMercadoCard } from './ui/controls.js';
+import config from './data/config.json';
+import patrones from './data/patterns.json';
+import mappings from './data/mappings.json';
+import paisesData from './data/paises.json';
 
 const SOURCE_EXPLAINERS = {
   clima: {
@@ -38,12 +42,6 @@ function normalizeFuenteId(id) {
 }
 
 async function init() {
-  const [config, patrones, mappings, paisesData] = await Promise.all([
-    fetch('./src/data/config.json').then(r => r.json()),
-    fetch('./src/data/patterns.json').then(r => r.json()),
-    fetch('./src/data/mappings.json').then(r => r.json()),
-    fetch('./src/data/paises.json').then(r => r.json()),
-  ]);
 
   const sala = new LaSala(patrones.length);
 
