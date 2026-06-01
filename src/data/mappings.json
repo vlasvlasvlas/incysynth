@@ -1,0 +1,50 @@
+{
+  "fuentes": {
+    "clima": {
+      "avance_sensibilidad": 2.5,
+      "retiene_sensibilidad": 1.5,
+      "retiene_quietud": 0.4,
+      "muta_escala": 1.0,
+      "muta_parametro": "filtro"
+    },
+    "mercado": {
+      "avance_sensibilidad": 3.0,
+      "retiene_sensibilidad": 0.8,
+      "retiene_quietud": 0.6,
+      "muta_escala": 1.2,
+      "muta_parametro": "jitter"
+    },
+    "noticias": {
+      "avance_sensibilidad": 2.0,
+      "retiene_sensibilidad": 1.0,
+      "retiene_quietud": 0.3,
+      "muta_escala": 0.8,
+      "muta_parametro": "timbre"
+    },
+    "indice_pais": {
+      "avance_sensibilidad": 0.0,
+      "retiene_sensibilidad": 0.0,
+      "retiene_quietud": 0.0,
+      "muta_escala": 0.0,
+      "muta_parametro": "audibilidad",
+      "es_lente": true
+    }
+  },
+  "pesos_sala": {
+    "api": 0.30,
+    "stigmergy": 0.20,
+    "cohesion": 0.20,
+    "separacion": 0.15,
+    "momentum": 0.15
+  },
+  "umbrales": {
+    "entrada": 0.30,
+    "avance": 0.52,
+    "retiene": 0.65,
+    "retiene_libera": 0.30,
+    "sale": 0.08,
+    "desbordado_n": 3,
+    "periferico": 0.30,
+    "distancia_max": 4
+  }
+}

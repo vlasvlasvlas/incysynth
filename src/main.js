@@ -1,0 +1,874 @@
+import * as Tone             from 'tone';
+import { LaSala }            from './logic/LaSala.js';
+import { Instrumento }        from './logic/Instrumento.js';
+import { AudioEngine }        from './audio/Engine.js';
+import { PRESETS, DEFAULTS }  from './audio/presets.js';
+import { OpenMeteoAdapter }   from './data-sources/OpenMeteoAdapter.js';
+import { CoinGeckoAdapter }   from './data-sources/CoinGeckoAdapter.js';
+import { NewsRSSAdapter }     from './data-sources/NewsRSSAdapter.js';
+import { WorldBankAdapter }   from './data-sources/WorldBankAdapter.js';
+import { CircleView }         from './ui/CircleView.js';
+import { PartituraView }      from './ui/PartituraView.js';
+import { buildLenteCard, buildCiudadCard, buildNoticiasCard, buildMercadoCard } from './ui/controls.js';
+
+const SOURCE_EXPLAINERS = {
+  clima: {
+    origen: 'Open-Meteo Forecast API · ciudad elegida',
+    datos: 'temperatura -> magnitud · cambio de temperatura -> AVANZA · viento -> MUTA',
+    formula: 'Temp normalizada (-10 a 40 C) + viento normalizado (0 a 80 km/h). No usa palabras.',
+  },
+  mercado: {
+    origen: 'CoinGecko API · bitcoin + ethereum',
+    datos: 'cambio 24h promedio -> magnitud · movimiento brusco -> AVANZA · volatilidad -> MUTA',
+    formula: 'BTC/ETH 24h: -20% = 0, 0% = 0.5, +20% = 1.',
+  },
+  noticias: {
+    origen: 'RSS publicos · pais/edicion y medio elegibles',
+    datos: 'titulares -> palabras clave -> categorias semanticas -> AVANZA/RETIENE/MUTA',
+    formula: 'conflicto + muerte + clima suben intensidad; diversidad de categorias sube mutacion.',
+  },
+};
+
+const VERBOS = ['ENTRA', 'AVANZA', 'RETIENE', 'MUTA', 'SALE'];
+
+function normalizeFuenteId(id) {
+  if (id === 'bolsa') return 'mercado';
+  if (['clima', 'mercado', 'noticias'].includes(id)) return id;
+  return 'clima';
+}
+
+async function init() {
+  const [config, patrones, mappings, paisesData] = await Promise.all([
+    fetch('./src/data/config.json').then(r => r.json()),
+    fetch('./src/data/patterns.json').then(r => r.json()),
+    fetch('./src/data/mappings.json').then(r => r.json()),
+    fetch('./src/data/paises.json').then(r => r.json()),
+  ]);
+
+  const sala = new LaSala(patrones.length);
+
+  // ── APIs abiertas, sin key ──
+  const climaFuente    = new OpenMeteoAdapter(-34.6, -58.4, 'Buenos Aires');
+  const mercadoFuente  = new CoinGeckoAdapter();
+  const noticiasFuente = new NewsRSSAdapter();
+  const lenteFuente    = new WorldBankAdapter();
+  climaFuente.start(); mercadoFuente.start(); noticiasFuente.start();
+  setInterval(() => { climaFuente.tick(); mercadoFuente.tick(); noticiasFuente.tick(); }, 800);
+
+  const fuentes = { clima: climaFuente, mercado: mercadoFuente, noticias: noticiasFuente };
+
+  // ── Instrumentos (auto-conectados) ──
+  const instIds   = Object.keys(config.instrumentos);
+  const fuenteIds = instIds.map(id => normalizeFuenteId(config.instrumentos[id].fuente_default));
+  const instrumentos = {};
+  window._instrumentos = instrumentos;
+
+  for (let i = 0; i < instIds.length; i++) {
+    const id  = instIds[i];
+    const cfg = config.instrumentos[id];
+    const fid = fuenteIds[i];
+    const mapeo = mappings.fuentes[fid] || mappings.fuentes.clima;
+    const inst  = new Instrumento(id, sala, mapeo, mappings.umbrales, mappings.pesos_sala);
+    inst._colorHex  = cfg.color_hex;
+    inst._tipoSynth = cfg.tipo;
+    inst._nombre    = cfg.nombre || id;
+    inst._desc      = cfg.descripcion || '';
+    inst._fuenteId  = fid;
+    inst._volumenDb = 0;
+    inst._presetKey = DEFAULTS[id] || 'ARCO';
+    inst._manualSignal = 0;
+    inst._manualBlend = 0;
+    inst._advanceBias = 0;
+    inst._manualMuta = 0;
+    inst._glowRadius = 1;
+    inst._lightGain = 1;
+    instrumentos[id] = inst;
+    sala.registrarInstrumento(id, 0);
+    inst.conectarFuentes([{ id: `${fid}_A`, tipo: fid, source: fuentes[fid], mapeo }]);
+  }
+
+  // ── Vistas Visuales ──
+  const mainContainer = document.getElementById('circle-container');
+  const views = {
+    circle: new CircleView(mainContainer, instIds),
+    partitura: new PartituraView(mainContainer, instIds)
+  };
+  let currentViewId = 'partitura';
+
+  // Inicializar dejando solo el activo en el DOM
+  mainContainer.innerHTML = '';
+  mainContainer.appendChild(views[currentViewId]._canvas);
+  views[currentViewId]._resize();
+  document.querySelectorAll('.view-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.view === currentViewId);
+  });
+
+  // Toggle de vistas
+  document.querySelectorAll('.view-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
+      e.target.classList.add('active');
+      const viewId = e.target.dataset.view;
+      if (views[viewId]) {
+        // Limpiar canvas actual
+        mainContainer.innerHTML = '';
+        currentViewId = viewId;
+        // Re-adjuntar canvas de la nueva vista
+        mainContainer.appendChild(views[viewId]._canvas);
+        views[viewId]._resize();
+      }
+    });
+  });
+
+  // ── Señales en sidebar ──
+  const senalesEl    = document.getElementById('senales-strip');
+  const senalUpdates = {};
+  for (let i = 0; i < instIds.length; i++) {
+    const id  = instIds[i];
+    const fid = fuenteIds[i];
+    const { card, update } = buildSenalCard(id, fid, config.instrumentos[id], fuentes[fid], instrumentos[id], mappings.fuentes[fid]);
+    senalesEl.appendChild(card);
+    senalUpdates[id] = update;
+  }
+
+  // ── Panel de control en sidebar ──
+  let engine = null;
+  const tableroEl     = document.getElementById('panel-tablero');
+  const salaPanelRoot = document.createElement('div');
+  salaPanelRoot.className = 'sala-panel';
+  tableroEl.appendChild(salaPanelRoot);
+  const updateSalaPanel = buildSalaPanel(salaPanelRoot, instIds, instrumentos, sala);
+
+
+  // Ciudad
+  tableroEl.appendChild(buildCiudadCard((ciudad, lat, lon) => {
+    const nuevo = new OpenMeteoAdapter(lat, lon, ciudad);
+    nuevo.start();
+    fuentes.clima = nuevo;
+    for (const id in instrumentos) {
+      if (instrumentos[id]._fuenteId === 'clima' && instrumentos[id].fuentes[0]) {
+        instrumentos[id].fuentes[0].source = nuevo;
+      }
+    }
+  }));
+
+  // Mercado
+  tableroEl.appendChild(buildMercadoCard(mercadoFuente));
+
+  // Noticias
+  tableroEl.appendChild(buildNoticiasCard(noticiasFuente));
+
+  // Lente país
+  tableroEl.appendChild(buildLenteCard(paisesData, lenteFuente, instrumentos));
+
+  // Timbres
+  const sonidoPanel = buildSonidoCard(instIds, config.instrumentos, instrumentos, () => engine);
+  tableroEl.appendChild(sonidoPanel.card);
+
+  // BPM + Pulso
+  tableroEl.appendChild(buildRitmoCard(() => engine));
+
+  // Botón play/stop unificado en header
+  const btnPlay = document.getElementById('btn-detener');
+  btnPlay.disabled = false;
+
+  const doToggle = () => {
+    if (!engine) {
+      // Iniciar
+      engine = new AudioEngine(config, patrones, sala, instrumentos, () => {});
+      window._engine = engine;
+      engine.start();
+      btnPlay.textContent = '■';
+      btnPlay.classList.add('playing');
+      btnPlay.title = 'Detener';
+    } else {
+      // Detener
+      engine.dispose(); engine = null;
+      window._engine = null;
+      btnPlay.textContent = '▶';
+      btnPlay.classList.remove('playing');
+      btnPlay.title = 'Invocar';
+    }
+  };
+  btnPlay.addEventListener('click', doToggle);
+
+  // ── Volumen master (header slider) ──
+  const masterVol = document.getElementById('master-vol');
+  const masterVolNum = document.getElementById('master-vol-num');
+  if (masterVol) {
+    Tone.Destination.volume.value = parseFloat(masterVol.value);
+    masterVol.addEventListener('input', () => {
+      const v = parseFloat(masterVol.value);
+      Tone.Destination.volume.value = v;
+      if (masterVolNum) masterVolNum.textContent = `${v} dB`;
+    });
+  }
+
+  // ── Theme toggle (☾) ──
+  const btnTheme = document.getElementById('btn-theme');
+  const syncThemeSurface = () => {
+    const dark = document.body.classList.contains('dark-theme');
+    const mainView = document.getElementById('main-view');
+    const circleContainer = document.getElementById('circle-container');
+    const col = dark ? '#0c1118' : '#f6efe3';
+    if (mainView) mainView.style.backgroundColor = col;
+    if (circleContainer) circleContainer.style.backgroundColor = col;
+  };
+  syncThemeSurface();
+  btnTheme.addEventListener('click', () => {
+    document.body.classList.toggle('dark-theme');
+    btnTheme.textContent = document.body.classList.contains('dark-theme') ? '☀' : '☾';
+    syncThemeSurface();
+    views[currentViewId]?.render(instrumentos, sala);
+  });
+
+  // ── Sidebar toggle (⚙) ──
+  const btnSidebar = document.getElementById('btn-sidebar');
+  btnSidebar.addEventListener('click', () => {
+    document.body.classList.toggle('sidebar-open');
+    btnSidebar.classList.toggle('active');
+  });
+
+  // ── About modal (?) ──
+  const aboutModal    = document.getElementById('about-modal');
+  const modalClose    = document.getElementById('modal-close');
+  const modalBackdrop = document.getElementById('modal-backdrop');
+  document.getElementById('btn-about').addEventListener('click', () => aboutModal.classList.add('open'));
+  modalClose.addEventListener('click',    () => aboutModal.classList.remove('open'));
+  modalBackdrop.addEventListener('click', () => aboutModal.classList.remove('open'));
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') aboutModal.classList.remove('open'); });
+
+  // ── Render loop ──
+  let _bpmLabelLast = 0;
+  let _lastIdleTick = 0;
+  const tickIdleState = () => {
+    const now = performance.now();
+    if (!engine && now - _lastIdleTick > 450) {
+      for (const id in instrumentos) instrumentos[id].tick();
+      _lastIdleTick = now;
+    }
+  };
+  const refreshPanels = () => {
+    for (const id in senalUpdates) senalUpdates[id]();
+    updateSalaPanel();
+    sonidoPanel.update();
+    const mb = document.getElementById('momentum-bar');
+    if (mb) mb.style.width = `${sala.getMomentum() * 100}%`;
+
+    // BPM label en header
+    const bpmEl = document.getElementById('bpm-label');
+    if (bpmEl && engine) {
+      const bpm = Math.round(Tone.Transport.bpm.value);
+      if (bpm !== _bpmLabelLast) { bpmEl.textContent = `${bpm} BPM`; _bpmLabelLast = bpm; }
+    }
+  };
+  setInterval(() => {
+    try {
+      tickIdleState();
+      refreshPanels();
+    } catch (e) {
+      console.error(e);
+    }
+  }, 250);
+
+  requestAnimationFrame(function loop() {
+    tickIdleState();
+    if (views[currentViewId]) {
+      views[currentViewId].render(instrumentos, sala);
+    }
+    requestAnimationFrame(loop);
+  });
+}
+
+// ── Panel visible de la sala ──
+function buildSalaPanel(root, instIds, instrumentos, sala) {
+  if (!root) return () => {};
+
+  root.innerHTML = `
+    <div class="sala-panel-head">
+      <span class="sala-panel-kicker">LA SALA ESCUCHA</span>
+      <span class="sala-panel-note">dos oídos: mundo externo + sala compartida</span>
+    </div>
+    <div class="concept-grid">
+      <div class="concept-card">
+        <div class="concept-title">HUELLA</div>
+        <div class="concept-copy">Los patrones tocados dejan rastro. Esa memoria atrae, satura o destraba.</div>
+        <div class="concept-meter"><span id="concept-huella"></span></div>
+      </div>
+      <div class="concept-card">
+        <div class="concept-title">CONVIVENCIA</div>
+        <div class="concept-copy">Riley pide no alejarse demasiado. Cerca = escucha; lejos = tensión.</div>
+        <div class="concept-meter"><span id="concept-grupo"></span></div>
+      </div>
+      <div class="concept-card">
+        <div class="concept-title">MOMENTUM</div>
+        <div class="concept-copy">Cuando alguien avanza, deja una corriente. Los demás pueden sentir ese arrastre.</div>
+        <div class="concept-meter"><span id="concept-momentum"></span></div>
+      </div>
+    </div>
+    <div class="listening-map" id="listening-map"></div>
+    <div class="decision-list" id="decision-list"></div>
+  `;
+
+  const huellaEl = root.querySelector('#concept-huella');
+  const grupoEl = root.querySelector('#concept-grupo');
+  const momentumEl = root.querySelector('#concept-momentum');
+  const listeningEl = root.querySelector('#listening-map');
+  const listEl = root.querySelector('#decision-list');
+  let last = 0;
+
+  return function update() {
+    const now = performance.now();
+    if (now - last < 220) return;
+    last = now;
+
+    const maxHuella = Math.max(0, ...Array.from(sala.terreno));
+    const centro = sala.getCentroMasa();
+    const distancia = sala.getDistanciaMaxima();
+    const momentum = sala.getMomentum();
+
+    setMeter(huellaEl, maxHuella, `max ${maxHuella.toFixed(2)}`);
+    setMeter(grupoEl, Math.min(1, distancia / 8), `centro ${(centro + 1).toFixed(1)} · distancia ${distancia}p`);
+    setMeter(momentumEl, momentum, `${Math.round(momentum * 100)}%`);
+
+    listeningEl.innerHTML = renderListeningMap(instIds, instrumentos);
+
+    listEl.innerHTML = instIds.map(id => {
+      const inst = instrumentos[id];
+      if (!inst) return '';
+      const ui = inst.getEstadoUI();
+      const breakdown = ui.probBreakdown || (inst.señal ? inst.getProbabilidadBreakdown() : null);
+      const p = breakdown?.p ?? 0;
+      const motivo = readableMotivo(breakdown?.motivo);
+      const world = breakdown?.api ?? 0;
+      const room = getRoomPressure(breakdown);
+      const closest = getClosestInstrument(id, instIds, instrumentos);
+      const estado = ui.estado === 'RETENIDO'
+        ? 'retenido: repite el patron'
+        : (ui.decision && ui.decision !== 'sin ciclo' ? ui.decision : `${ui.estado}: esperando fin del patron`);
+      return `
+        <div class="decision-row listening-decision">
+          <div class="decision-main">
+            <span class="decision-name">${escapeHTML(inst._nombre || id)}</span>
+            <span class="decision-state">${escapeHTML(humanDecision(estado, motivo, closest))}</span>
+            <span class="decision-pos">patron ${Math.min(inst.posicion + 1, sala.numPatrones)}/${sala.numPatrones} · escucha a ${escapeHTML(closest?.name || 'nadie')}</span>
+          </div>
+          <div class="decision-prob">
+            <span class="decision-prob-num">${Math.round(p * 100)}%</span>
+            <span class="decision-cause">${motivo}</span>
+          </div>
+          <div class="ear-bars">
+            <div><b>mundo</b><i><span style="width:${Math.min(100, Math.abs(world) * 100)}%"></span></i><em>${signedPct(world)}</em></div>
+            <div><b>sala</b><i><span style="width:${Math.min(100, Math.abs(room) * 100)}%"></span></i><em>${signedPct(room)}</em></div>
+          </div>
+          ${renderBreakdownBars(breakdown)}
+        </div>
+      `;
+    }).join('');
+  };
+}
+
+function renderBreakdownBars(b) {
+  if (!b) return '<div class="decision-bars muted">sin senal suficiente</div>';
+  const parts = [
+    ['dato', b.api, '#1a44cc'],
+    ['huella', b.stigmergy, '#111'],
+    ['grupo', b.cohesion, '#444'],
+    ['separa', b.separacion, '#1a7a1a'],
+    ['pulso', b.momentum, '#666'],
+    ['impacto', b.shockwave || 0, '#cc8800'],
+    ['control', b.bias || 0, '#7a35cc'],
+    ['freno', -b.freno, '#cc2200'],
+  ];
+  return `
+    <div class="decision-bars">
+      ${parts.map(([label, value, color]) => {
+        const width = Math.min(100, Math.abs(value) * 100);
+        const signed = value < 0 ? '-' : '+';
+        return `
+          <span class="decision-part" title="${label}: ${signed}${Math.abs(value).toFixed(2)}">
+            <i style="height:${width}%;background:${color};"></i>
+            <b>${label}</b>
+          </span>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function setMeter(el, value, label) {
+  if (!el) return;
+  el.style.width = `${Math.max(0, Math.min(1, value)) * 100}%`;
+  el.textContent = label;
+}
+
+function readableMotivo(motivo) {
+  return ({
+    api: 'dato externo',
+    dato: 'dato externo',
+    stigmergy: 'huella',
+    huella: 'huella',
+    cohesion: 'grupo',
+    grupo: 'grupo',
+    separacion: 'destrabe',
+    momentum: 'momentum',
+    shockwave: 'impacto',
+    impacto: 'impacto',
+    control: 'control manual',
+    freno_manual: 'freno manual',
+    freno: 'freno',
+  })[motivo] || 'mixto';
+}
+
+function renderListeningMap(instIds, instrumentos) {
+  const pairs = [];
+  for (let i = 0; i < instIds.length; i++) {
+    for (let j = i + 1; j < instIds.length; j++) {
+      const a = instrumentos[instIds[i]];
+      const b = instrumentos[instIds[j]];
+      if (!a || !b) continue;
+      const d = Math.abs(a.posicion - b.posicion);
+      pairs.push({ a, b, d, rel: relationLabel(d) });
+    }
+  }
+  if (!pairs.length) return '';
+  return `
+    <div class="listening-title">QUIÉN SE ESTÁ OYENDO</div>
+    ${pairs.map(({ a, b, d, rel }) => `
+      <div class="listening-pair ${rel.key}">
+        <span>${escapeHTML(a._nombre || a.id)}</span>
+        <i>${escapeHTML(rel.text)} · ${d} patrones</i>
+        <span>${escapeHTML(b._nombre || b.id)}</span>
+      </div>
+    `).join('')}
+  `;
+}
+
+function relationLabel(distance) {
+  if (distance <= 1) return { key: 'unisono', text: 'unísono' };
+  if (distance <= 3) return { key: 'escucha', text: 'escucha fuerte' };
+  if (distance <= 6) return { key: 'tension', text: 'tensión útil' };
+  return { key: 'aislado', text: 'aislamiento' };
+}
+
+function getClosestInstrument(id, instIds, instrumentos) {
+  const inst = instrumentos[id];
+  if (!inst) return null;
+  let best = null;
+  for (const otherId of instIds) {
+    if (otherId === id) continue;
+    const other = instrumentos[otherId];
+    if (!other) continue;
+    const d = Math.abs(inst.posicion - other.posicion);
+    if (!best || d < best.distance) {
+      best = { id: otherId, name: other._nombre || otherId, distance: d, relation: relationLabel(d) };
+    }
+  }
+  return best;
+}
+
+function getRoomPressure(b) {
+  if (!b) return 0;
+  return (b.stigmergy || 0)
+    + (b.cohesion || 0)
+    + (b.separacion || 0)
+    + (b.momentum || 0)
+    + (b.shockwave || 0)
+    + (b.bias || 0)
+    - (b.freno || 0);
+}
+
+function humanDecision(estado, motivo, closest) {
+  const relation = closest ? `${closest.relation.text} con ${closest.name}` : 'sin relación cercana';
+  if (motivo === 'impacto') return `se mueve porque otro avance lo contagia; ${relation}`;
+  if (motivo === 'grupo') return `la sala lo arrastra hacia el grupo; ${relation}`;
+  if (motivo === 'huella') return `la huella del patrón todavía pesa; ${relation}`;
+  if (motivo === 'destrabe') return `abre espacio para no quedar pegado; ${relation}`;
+  if (motivo === 'momentum') return `sigue la corriente colectiva; ${relation}`;
+  if (motivo === 'dato externo') return `su mundo externo empuja; ${relation}`;
+  if (motivo === 'freno') return `se frena por alejarse demasiado; ${relation}`;
+  if (motivo === 'control manual') return `gesto del convocante altera su escucha; ${relation}`;
+  return `${estado}; ${relation}`;
+}
+
+function signedPct(v) {
+  const n = Math.round(Math.max(-1, Math.min(1, v || 0)) * 100);
+  return `${n >= 0 ? '+' : ''}${n}%`;
+}
+
+// ── Señal card ──
+function buildSenalCard(instId, fuenteId, cfg, fuente, inst, mapeo) {
+  const COLORS  = { clima: '#1a44cc', mercado: '#1a7a1a', noticias: '#cc8800' };
+  const LABELS  = { clima: 'CLIMA (Open-Meteo)', mercado: 'MERCADO (CoinGecko)', noticias: 'NOTICIAS (RSS)' };
+  const col     = COLORS[fuenteId] || '#888';
+  const label   = LABELS[fuenteId] || fuenteId;
+
+  const card = document.createElement('div'); card.className = 'senal-card';
+
+  const hdr = document.createElement('div'); hdr.className = 'senal-header';
+  hdr.innerHTML = `
+    <span class="senal-fuente-nome" style="color:${col}">${label}</span>
+    <span class="senal-flecha">→</span>
+    <span class="senal-inst-nome">${cfg.nombre || instId}</span>
+    <span class="senal-estado-badge" id="ss-estado-${instId}">—</span>
+  `;
+
+  const desc = document.createElement('div');
+  desc.style.cssText = 'font-family:var(--mono);font-size:0.5rem;color:#ccc;';
+  desc.textContent = cfg.descripcion || '';
+
+  const payloadEl = document.createElement('div');
+  payloadEl.className = 'senal-payload'; payloadEl.style.color = col;
+
+  // Semáforo de probabilidad (BITACORA: verde pleno / tenue / amarillo / naranja / rojo)
+  const semaforo = document.createElement('div');
+  semaforo.className = 'senal-semaforo';
+  semaforo.innerHTML = `
+    <span class="semaforo-label">P(avance)</span>
+    <div class="semaforo-bar-bg"><div class="semaforo-bar-fill" id="sem-fill-${instId}"></div></div>
+    <span class="semaforo-estado" id="sem-estado-${instId}">—</span>
+  `;
+
+  const barBg = document.createElement('div'); barBg.className = 'senal-barra-bg';
+  const barFl = document.createElement('div'); barFl.className = 'senal-barra-fill'; barFl.style.background = col;
+  barBg.appendChild(barFl);
+
+  const valsEl = document.createElement('div'); valsEl.className = 'senal-valores';
+  valsEl.innerHTML = `señal: <span class="senal-val-num" id="ss-mag-${instId}">—</span>
+    &nbsp;vol: <span class="senal-val-num" id="ss-vol-${instId}">—</span>
+    &nbsp;cambio: <span class="senal-val-num" id="ss-cam-${instId}">—</span>`;
+
+  const verbosEl = document.createElement('div'); verbosEl.className = 'senal-verbos';
+  const chips = {};
+  for (const v of ['AVANZA','RETIENE','MUTA','SALE']) {
+    const c = document.createElement('span'); c.className = `verbo-chip ${v}`; c.textContent = v;
+    verbosEl.appendChild(c); chips[v] = c;
+  }
+
+  const origenEl = document.createElement('div');
+  origenEl.className = 'senal-origen';
+  const exp = SOURCE_EXPLAINERS[fuenteId];
+  origenEl.innerHTML = exp ? `
+    <div><b>origen:</b> ${escapeHTML(exp.origen)}</div>
+    <div><b>influye:</b> ${escapeHTML(exp.datos)}</div>
+    <div class="senal-formula">${escapeHTML(exp.formula)}</div>
+  ` : '';
+
+  const detalleEl = document.createElement('div');
+  detalleEl.className = 'senal-detalle';
+
+  for (const el of [hdr, desc, payloadEl, semaforo, barBg, valsEl, verbosEl, origenEl, detalleEl]) card.appendChild(el);
+
+  function update() {
+    const ui = inst.getEstadoUI();
+    const s  = inst.fuentes?.[0]?.source || fuente;
+
+    const eEl = document.getElementById(`ss-estado-${instId}`);
+    if (eEl) { eEl.textContent = ui.estado; eEl.className = `senal-estado-badge ${ui.estado.toLowerCase()}`; }
+
+    payloadEl.textContent = s.payloadText || '—';
+    barFl.style.width = `${s.magnitud * 100}%`;
+
+    const mEl = document.getElementById(`ss-mag-${instId}`);
+    const vEl = document.getElementById(`ss-vol-${instId}`);
+    const cEl = document.getElementById(`ss-cam-${instId}`);
+    if (mEl) mEl.textContent = s.magnitud.toFixed(2);
+    if (vEl) vEl.textContent = s.volatilidad.toFixed(2);
+    if (cEl) {
+      const c = s.cambio;
+      cEl.textContent = c > 0.01 ? `↑${c.toFixed(2)}` : c < -0.01 ? `↓${c.toFixed(2)}` : '→0';
+      cEl.style.color = c > 0.01 ? '#1a7a1a' : c < -0.01 ? '#cc2200' : '#999';
+    }
+
+    // Semáforo de probabilidad
+    const probBreakdown = ui.probBreakdown || (inst.señal ? inst.getProbabilidadBreakdown() : null);
+    if (probBreakdown) {
+      const p      = probBreakdown.p;
+      const sfill  = document.getElementById(`sem-fill-${instId}`);
+      const sestEl = document.getElementById(`sem-estado-${instId}`);
+      if (sfill) {
+        sfill.style.width      = `${p * 100}%`;
+        sfill.style.background = p > 0.60 ? '#1a7a1a' : p > 0.40 ? '#ccaa00' : p > 0.20 ? '#cc6600' : '#cc2200';
+      }
+      if (sestEl) {
+        sestEl.textContent = p > 0.60 ? 'avanza ▶' : p > 0.40 ? 'posible ◐' : p > 0.20 ? 'frenado ◑' : 'insiste ●';
+        sestEl.style.color = p > 0.60 ? '#1a7a1a' : p > 0.40 ? '#ccaa00' : p > 0.20 ? '#cc6600' : '#cc2200';
+      }
+    }
+
+    if (mapeo) {
+      for (const v of ['AVANZA','RETIENE','MUTA','SALE']) {
+        const p = s.getVerb ? s.getVerb(v, mapeo) : 0;
+        chips[v].classList.toggle('activo', p > 0.12);
+        chips[v].title = `${v}: ${p.toFixed(2)}`;
+        chips[v].textContent = `${v} ${p.toFixed(2)}`;
+      }
+    }
+
+    detalleEl.innerHTML = renderFuenteDetalle(fuenteId, s, mapeo);
+  }
+  return { card, update };
+}
+
+function renderFuenteDetalle(fuenteId, source, mapeo) {
+  if (fuenteId === 'noticias' && source.getDebugInfo) {
+    return renderNoticiasDetalle(source.getDebugInfo(), source, mapeo);
+  }
+  const verbs = mapeo ? VERBOS.map(v => {
+    const val = source.getVerb ? source.getVerb(v, mapeo) : 0;
+    return `<span class="data-chip">${v} ${val.toFixed(2)}</span>`;
+  }).join('') : '';
+  return `<div class="data-chip-row">${verbs}</div>`;
+}
+
+function renderNoticiasDetalle(info, source, mapeo) {
+  const feeds = (info.feeds || []).map(feed => `
+    <div class="feed-row">
+      <span>${escapeHTML(feed.name)}</span>
+      <span class="${feed.estado === 'ok' ? 'ok' : 'err'}">${escapeHTML(feed.estado)}${feed.items ? ` · ${feed.items}` : ''}${feed.error ? ` · ${escapeHTML(feed.error)}` : ''}</span>
+    </div>
+  `).join('');
+
+  const categorias = Object.entries(info.categorias || {})
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6)
+    .map(([cat, n]) => {
+      const max = Math.max(1, ...Object.values(info.categorias || {}));
+      return `
+        <div class="cat-row">
+          <span>${escapeHTML(cat)}</span>
+          <div><i style="width:${Math.round((n / max) * 100)}%"></i></div>
+          <b>${n}</b>
+        </div>
+      `;
+    }).join('');
+
+  const palabras = (info.palabras || [])
+    .map(p => `<span class="word-chip">${escapeHTML(p.palabra)} <b>${p.n}</b></span>`)
+    .join('') || '<span class="word-chip muted">sin palabras clave</span>';
+
+  const titulares = (info.titulares || []).slice(0, 3).map(t => `
+    <div class="headline-row"><b>${escapeHTML(t.fuente)}</b> ${escapeHTML(t.titulo)}</div>
+  `).join('');
+
+  const verbs = mapeo ? VERBOS.map(v => {
+    const val = source.getVerb ? source.getVerb(v, mapeo) : 0;
+    return `<span class="data-chip">${v} ${val.toFixed(2)}</span>`;
+  }).join('') : '';
+
+  return `
+    <div class="news-flow">${escapeHTML(info.flujo || '')}</div>
+    <div class="feed-list">${feeds}</div>
+    <div class="cat-list">${categorias}</div>
+    <div class="word-list">${palabras}</div>
+    <div class="data-chip-row">${verbs}</div>
+    <div class="headline-list">${titulares}</div>
+  `;
+}
+
+function escapeHTML(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+// ── Instrumentos: señal, luz y sonido ──
+function buildSonidoCard(instIds, instConfig, instrumentos, getEngine) {
+  const card = document.createElement('div'); card.className = 'sonido-card';
+  const h = document.createElement('h3'); h.textContent = 'MÚSICOS CONVOCADOS'; card.appendChild(h);
+  const rows = {};
+
+  for (const id of instIds) {
+    const cfg = instConfig[id];
+    const inst = instrumentos[id];
+    const touchInst = () => { if (!getEngine()) inst.tick(); };
+    const row = document.createElement('div'); row.className = 'sonido-row instrumento-control';
+    const lbl = document.createElement('div'); lbl.className = 'sonido-inst-name'; lbl.textContent = cfg.nombre || id;
+    const status = document.createElement('div'); status.className = 'inst-live-status'; status.textContent = 'sin ciclo';
+    const dlbl = document.createElement('div'); dlbl.className = 'sonido-inst-desc';
+    const sel = document.createElement('select'); sel.className = 'lente-sel'; sel.style.width = '100%';
+    for (const key of Object.keys(PRESETS)) {
+      const opt = document.createElement('option');
+      opt.value = key; opt.textContent = PRESETS[key].nombre;
+      if (key === (inst._presetKey || DEFAULTS[id] || 'ARCO')) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    dlbl.textContent = PRESETS[sel.value]?.desc || '';
+    sel.addEventListener('change', () => {
+      dlbl.textContent = PRESETS[sel.value]?.desc || '';
+      inst._presetKey = sel.value;
+      const eng = getEngine();
+      if (eng && eng._running) eng.cambiarPreset(id, sel.value);
+    });
+
+    const previewBtn = document.createElement('button');
+    previewBtn.type = 'button';
+    previewBtn.className = 'mini-btn';
+    previewBtn.textContent = 'ESCUCHAR';
+    previewBtn.addEventListener('click', async () => {
+      const eng = getEngine();
+      if (eng && eng._running) {
+        eng.audition(id);
+      } else {
+        await previewPreset(sel.value, id, inst._volumenDb ?? 0);
+      }
+    });
+
+    const colorRow = document.createElement('div');
+    colorRow.className = 'control-row color-control-row';
+    const colorLbl = document.createElement('span');
+    colorLbl.className = 'control-label';
+    colorLbl.textContent = 'COLOR';
+    const colorInp = document.createElement('input');
+    colorInp.type = 'color';
+    colorInp.value = cfg.color_hex || '#ffffff';
+    colorInp.className = 'color-input';
+    colorInp.addEventListener('input', (e) => { inst._colorHex = e.target.value; touchInst(); });
+    colorRow.appendChild(colorLbl);
+    colorRow.appendChild(colorInp);
+    colorRow.appendChild(previewBtn);
+
+    const signalRow = makeRange('PRESIÓN', 0, 1, 0.01, inst._manualSignal ?? 0, v => v.toFixed(2), v => { inst._manualSignal = v; touchInst(); });
+    const blendRow  = makeRange('GESTO', 0, 1, 0.01, inst._manualBlend ?? 0, v => `${Math.round(v * 100)}%`, v => { inst._manualBlend = v; touchInst(); });
+    const advanceRow = makeRange('PERMISO', -0.35, 0.45, 0.01, inst._advanceBias ?? 0, v => `${v >= 0 ? '+' : ''}${Math.round(v * 100)}%`, v => { inst._advanceBias = v; touchInst(); });
+    const mutaRow = makeRange('TIMBRE', 0, 1, 0.01, inst._manualMuta ?? 0, v => v.toFixed(2), v => { inst._manualMuta = v; touchInst(); });
+    const glowRow = makeRange('AURA', 0.2, 3, 0.05, inst._glowRadius ?? 1, v => `${v.toFixed(1)}x`, v => { inst._glowRadius = v; touchInst(); });
+    const lightRow = makeRange('BRILLO', 0.4, 2.5, 0.05, inst._lightGain ?? 1, v => `${v.toFixed(1)}x`, v => { inst._lightGain = v; touchInst(); });
+    const volRow = makeRange('VOL', -18, 12, 1, inst._volumenDb ?? 0, v => `${v >= 0 ? '+' : ''}${Math.round(v)} dB`, v => { inst._volumenDb = v; touchInst(); });
+
+    row.appendChild(lbl);
+    row.appendChild(status);
+    row.appendChild(sel);
+    row.appendChild(dlbl);
+    row.appendChild(colorRow);
+    row.appendChild(signalRow.el);
+    row.appendChild(blendRow.el);
+    row.appendChild(advanceRow.el);
+    row.appendChild(mutaRow.el);
+    row.appendChild(glowRow.el);
+    row.appendChild(lightRow.el);
+    row.appendChild(volRow.el);
+    card.appendChild(row);
+    rows[id] = { status, signalRow, blendRow, advanceRow, mutaRow, glowRow, lightRow, volRow };
+  }
+  return {
+    card,
+    update() {
+      for (const id of instIds) {
+        const inst = instrumentos[id];
+        const row = rows[id];
+        if (!inst || !row) continue;
+        const ui = inst.getEstadoUI();
+        const b = inst.señal ? inst.getProbabilidadBreakdown() : null;
+        row.status.textContent = `${ui.estado} · patrón ${Math.min(ui.posicion + 1, inst.sala.numPatrones)}/${inst.sala.numPatrones} · P ${Math.round((b?.p ?? 0) * 100)}% · señal ${ui.señal.toFixed(2)}`;
+      }
+    }
+  };
+}
+
+function makeRange(label, min, max, step, initial, format, onInput) {
+  const el = document.createElement('div');
+  el.className = 'control-row';
+  const lbl = document.createElement('span');
+  lbl.className = 'control-label';
+  lbl.textContent = label;
+  const input = document.createElement('input');
+  input.type = 'range';
+  input.min = String(min);
+  input.max = String(max);
+  input.step = String(step);
+  input.value = String(initial);
+  const value = document.createElement('span');
+  value.className = 'control-value';
+  const sync = () => {
+    const v = parseFloat(input.value);
+    value.textContent = format(v);
+    onInput(v);
+  };
+  input.addEventListener('input', sync);
+  el.appendChild(lbl);
+  el.appendChild(input);
+  el.appendChild(value);
+  sync();
+  return { el, input, value };
+}
+
+async function previewPreset(presetKey, id, volumeDb = 0) {
+  const preset = PRESETS[presetKey] || PRESETS.ARCO;
+  await Tone.start();
+  const filter = new Tone.Filter(preset.effects?.filterFreq || 9000, preset.effects?.filterType || 'lowpass').toDestination();
+  const synth = createToneSynth(preset);
+  synth.connect(filter);
+  synth.volume.value = (preset.volume ?? -18) + volumeDb;
+
+  const now = Tone.now() + 0.03;
+  const notes = id === 'percusion' ? ['C2', 'G2', 'C2'] : ['C4', 'E4', 'G4'];
+  notes.forEach((nota, i) => {
+    try { synth.triggerAttackRelease(nota, '8n', now + i * 0.15); } catch (_) {}
+  });
+  setTimeout(() => {
+    try { synth.dispose(); } catch (_) {}
+    try { filter.dispose(); } catch (_) {}
+  }, 1800);
+}
+
+function createToneSynth(preset) {
+  try {
+    if (preset.tipo === 'AMSynth') return new Tone.AMSynth(preset.config);
+    if (preset.tipo === 'FMSynth') return new Tone.FMSynth(preset.config);
+    if (preset.tipo === 'MembraneSynth') return new Tone.MembraneSynth(preset.config);
+    if (preset.tipo === 'PolySynth') return new Tone.PolySynth(Tone.Synth, preset.config);
+    return new Tone.Synth(preset.config);
+  } catch (_) {
+    return new Tone.Synth();
+  }
+}
+
+// ── BPM y volumen del pulso ──
+function buildRitmoCard(getEngine) {
+  const card = document.createElement('div'); card.className = 'sonido-card';
+  const h = document.createElement('h3'); h.textContent = 'RITMO'; card.appendChild(h);
+
+  // BPM
+  const bpmRow = document.createElement('div'); bpmRow.className = 'lente-row';
+  const bpmLbl = document.createElement('span'); bpmLbl.className = 'lente-label'; bpmLbl.textContent = 'BPM';
+  const bpmSlider = document.createElement('input');
+  bpmSlider.type = 'range'; bpmSlider.min = 60; bpmSlider.max = 160; bpmSlider.step = 1; bpmSlider.value = 96;
+  bpmSlider.style.flex = '1';
+  const bpmVal = document.createElement('span'); bpmVal.className = 'lente-efecto'; bpmVal.textContent = '96';
+  bpmSlider.addEventListener('input', () => {
+    const v = parseInt(bpmSlider.value);
+    bpmVal.textContent = v;
+    // Cambio inmediato — rampTo rompe el scheduling recursivo
+    const eng = getEngine();
+    if (eng) eng.setBPM(v);
+    else Tone.Transport.bpm.value = v;
+    const lbl = document.getElementById('bpm-label');
+    if (lbl) lbl.textContent = `${v} BPM`;
+  });
+  bpmRow.appendChild(bpmLbl); bpmRow.appendChild(bpmSlider); bpmRow.appendChild(bpmVal);
+  card.appendChild(bpmRow);
+
+  // Volumen del pulso
+  const pulsoRow = document.createElement('div'); pulsoRow.className = 'lente-row';
+  const pulsoLbl = document.createElement('span'); pulsoLbl.className = 'lente-label'; pulsoLbl.textContent = 'PULSO';
+  const pulsoSlider = document.createElement('input');
+  pulsoSlider.type = 'range'; pulsoSlider.min = -40; pulsoSlider.max = 0; pulsoSlider.step = 1; pulsoSlider.value = -18;
+  pulsoSlider.style.flex = '1';
+  const pulsoVal = document.createElement('span'); pulsoVal.className = 'lente-efecto'; pulsoVal.textContent = '-18 dB';
+  pulsoSlider.addEventListener('input', () => {
+    const v = parseInt(pulsoSlider.value);
+    pulsoVal.textContent = `${v} dB`;
+    const eng = getEngine();
+    if (eng?._pulse) eng._pulse.setVolume(v);
+  });
+  pulsoRow.appendChild(pulsoLbl); pulsoRow.appendChild(pulsoSlider); pulsoRow.appendChild(pulsoVal);
+  card.appendChild(pulsoRow);
+
+  return card;
+}
+
+init();

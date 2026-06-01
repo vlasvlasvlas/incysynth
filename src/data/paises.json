@@ -1,0 +1,50 @@
+{
+  "paises": [
+    { "codigo": "ARG", "nombre": "Argentina" },
+    { "codigo": "BRA", "nombre": "Brasil" },
+    { "codigo": "CHL", "nombre": "Chile" },
+    { "codigo": "USA", "nombre": "Estados Unidos" },
+    { "codigo": "NOR", "nombre": "Noruega" },
+    { "codigo": "NLD", "nombre": "Países Bajos" },
+    { "codigo": "SYR", "nombre": "Siria" },
+    { "codigo": "COD", "nombre": "Congo (RD)" },
+    { "codigo": "IND", "nombre": "India" },
+    { "codigo": "CHN", "nombre": "China" }
+  ],
+  "indicadores": [
+    { "codigo": "GINI",     "nombre": "Desigualdad (GINI)",    "invert": true  },
+    { "codigo": "POVERTY",  "nombre": "Pobreza extrema %",     "invert": true  },
+    { "codigo": "CO2",      "nombre": "CO₂ per cápita",        "invert": true  },
+    { "codigo": "INFANT",   "nombre": "Mortalidad infantil",   "invert": true  },
+    { "codigo": "LIFE",     "nombre": "Expectativa de vida",   "invert": false },
+    { "codigo": "WATER",    "nombre": "Acceso agua potable %", "invert": false },
+    { "codigo": "MILITARY", "nombre": "Gasto militar % PIB",   "invert": true  },
+    { "codigo": "REFUGEES", "nombre": "Refugiados (origen)",   "invert": true  },
+    { "codigo": "LITERACY", "nombre": "Alfabetización %",      "invert": false },
+    { "codigo": "INTERNET", "nombre": "Usuarios internet %",   "invert": false }
+  ],
+  "valores": {
+    "ARG": { "GINI":0.42, "POVERTY":0.01, "CO2":4.3, "INFANT":8.9,  "LIFE":76.4, "WATER":99.0, "MILITARY":0.7, "REFUGEES":0.01, "LITERACY":99.0, "INTERNET":74.0 },
+    "BRA": { "GINI":0.48, "POVERTY":0.04, "CO2":2.3, "INFANT":13.0, "LIFE":75.9, "WATER":97.0, "MILITARY":1.3, "REFUGEES":0.03, "LITERACY":93.0, "INTERNET":74.0 },
+    "CHL": { "GINI":0.44, "POVERTY":0.01, "CO2":4.7, "INFANT":6.2,  "LIFE":80.4, "WATER":99.0, "MILITARY":1.9, "REFUGEES":0.00, "LITERACY":96.0, "INTERNET":88.0 },
+    "USA": { "GINI":0.39, "POVERTY":0.01, "CO2":15.5,"INFANT":5.4,  "LIFE":78.5, "WATER":99.0, "MILITARY":3.5, "REFUGEES":0.00, "LITERACY":99.0, "INTERNET":92.0 },
+    "NOR": { "GINI":0.26, "POVERTY":0.00, "CO2":7.5, "INFANT":2.0,  "LIFE":83.2, "WATER":100.0,"MILITARY":1.8, "REFUGEES":0.00, "LITERACY":100.0,"INTERNET":98.0 },
+    "NLD": { "GINI":0.28, "POVERTY":0.00, "CO2":9.4, "INFANT":3.2,  "LIFE":82.3, "WATER":100.0,"MILITARY":1.4, "REFUGEES":0.00, "LITERACY":100.0,"INTERNET":96.0 },
+    "SYR": { "GINI":0.37, "POVERTY":0.50, "CO2":0.8, "INFANT":18.0, "LIFE":72.7, "WATER":79.0, "MILITARY":6.1, "REFUGEES":6.60, "LITERACY":87.0, "INTERNET":35.0 },
+    "COD": { "GINI":0.42, "POVERTY":0.73, "CO2":0.0, "INFANT":68.0, "LIFE":60.7, "WATER":45.0, "MILITARY":0.7, "REFUGEES":0.90, "LITERACY":77.0, "INTERNET":19.0 },
+    "IND": { "GINI":0.35, "POVERTY":0.10, "CO2":1.9, "INFANT":27.0, "LIFE":70.9, "WATER":93.0, "MILITARY":2.4, "REFUGEES":0.20, "LITERACY":74.0, "INTERNET":47.0 },
+    "CHN": { "GINI":0.38, "POVERTY":0.01, "CO2":8.0, "INFANT":7.1,  "LIFE":77.4, "WATER":95.0, "MILITARY":1.6, "REFUGEES":0.03, "LITERACY":97.0, "INTERNET":73.0 }
+  },
+  "rangos": {
+    "GINI":     { "min":0.20, "max":0.60 },
+    "POVERTY":  { "min":0.00, "max":0.80 },
+    "CO2":      { "min":0.00, "max":20.0 },
+    "INFANT":   { "min":0.00, "max":80.0 },
+    "LIFE":     { "min":55.0, "max":90.0 },
+    "WATER":    { "min":40.0, "max":100.0},
+    "MILITARY": { "min":0.00, "max":8.00 },
+    "REFUGEES": { "min":0.00, "max":7.00 },
+    "LITERACY": { "min":60.0, "max":100.0},
+    "INTERNET": { "min":10.0, "max":100.0}
+  }
+}

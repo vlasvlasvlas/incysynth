@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>In C / Mundo Real</title>
+  <link rel="stylesheet" href="./src/styles.css">
+</head>
+<body>
+
+  <header>
+    <div class="header-left">
+      <h1>IN C / MUNDO REAL</h1>
+      <p class="subtitle">Terry Riley · 1964 — reinterpretación generativa</p>
+    </div>
+    <div class="header-right">
+      <span class="meta-label bpm-label" id="bpm-label">96 BPM</span>
+      <div class="momentum-track" title="momentum del grupo"><div class="momentum-bar" id="momentum-bar"></div></div>
+      <div class="master-vol-wrap" title="Volumen general">
+        <label class="meta-label" for="master-vol">VOL</label>
+        <input type="range" id="master-vol" min="-40" max="0" step="1" value="-6" class="master-vol-slider">
+        <span class="meta-label" id="master-vol-num">-6 dB</span>
+      </div>
+      <div class="view-toggle" id="view-toggle" title="Cambiar modo de vista">
+        <button class="view-btn" data-view="circle">CÍRCULO</button>
+        <button class="view-btn active" data-view="partitura">PARTITURA</button>
+      </div>
+      <button id="btn-theme" class="btn-icon" title="Modo Oscuro/Claro">☾</button>
+      <button id="btn-about" class="btn-icon" title="Sobre este proyecto">?</button>
+      <button id="btn-sidebar" class="btn-icon" title="Configuración">⚙</button>
+      <button id="btn-detener" class="btn-play" title="Invocar / Detener">▶</button>
+    </div>
+  </header>
+
+  <main id="main-view">
+    <div id="circle-container"></div>
+  </main>
+
+  <aside id="sidebar">
+    <div id="sidebar-inner">
+      <!-- Señales en tiempo real -->
+      <div class="sb-section-title">SEÑALES EN VIVO</div>
+      <div id="senales-strip"></div>
+
+      <div class="sb-sep"></div>
+
+      <!-- Panel de config -->
+      <div id="panel-tablero"></div>
+    </div>
+  </aside>
+
+  <!-- Modal about -->
+  <div id="about-modal">
+    <div class="modal-backdrop" id="modal-backdrop"></div>
+    <div class="modal-box">
+      <button class="modal-close" id="modal-close">×</button>
+      <h2 class="modal-title">In C / Mundo Real</h2>
+      <p class="modal-text">
+        Una composición abierta donde el mundo es el intérprete y el usuario es el convocante.
+      </p>
+      <p class="modal-text">
+        Basada en <em>In C</em> de Terry Riley (1964) — obra seminal del minimalismo construida
+        sobre 53 fragmentos melódicos que los músicos navegan a su propio ritmo, escuchándose
+        entre sí para decidir cuándo avanzar.
+      </p>
+      <p class="modal-text">
+        En esta versión, los datos del mundo real — clima, mercados, titulares de noticias —
+        toman el lugar de los músicos. Sus señales deciden cuándo avanzar, cuándo detenerse,
+        cómo sonar. El círculo muestra la sala desde arriba: los puntos son los instrumentos,
+        los colores el dato que los mueve, las ondas el contagio entre ellos.
+      </p>
+      <p class="modal-text">
+        El usuario no controla la música. Convoca las fuentes y escucha lo que producen juntas.
+      </p>
+      <a class="modal-link" href="https://github.com/vlasvlasvlas/incsynth" target="_blank" rel="noopener">
+        github.com/vlasvlasvlas/incsynth →
+      </a>
+    </div>
+  </div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
